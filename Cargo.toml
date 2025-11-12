@@ -16,3 +16,6 @@ bytes = "1"
 [dependencies.jce-derive]
 version = "0.1.1"
 path = "jce-derive"
+
+[dev-dependencies]
+hex = "0.4"
