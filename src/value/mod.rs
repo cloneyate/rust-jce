@@ -88,9 +88,7 @@ impl Hash for Value {
 fn read_value<B: Buf>(buf: &mut B, t: u8) -> DecodeResult<Value> {
     fn bytes_from_buf<B: Buf>(buf: &mut B, len: usize) -> Bytes {
         if len > 0 {
-            let b = Bytes::from(buf.chunk()[..len].to_vec());
-            buf.advance(len);
-            b
+            buf.copy_to_bytes(len)
         } else {
             Bytes::new()
         }
