@@ -823,6 +823,52 @@ mod jce_struct {
             <Self as JceStruct>::encoded_len(self) + 1
         }
     }
+
+    impl<T: JceStruct> JceType for Vec<T> {
+        fn read<B: Buf>(
+            buf: &mut B,
+            t: u8,
+            struct_name: &'static str,
+            field: &'static str,
+        ) -> DecodeResult<Self> {
+            super::check_type(t, super::LIST, struct_name, field)?;
+
+            let len = crate::de::read_len(buf)?;
+            let mut v = Vec::with_capacity(len);
+
+            for _ in 0..len {
+                let t = super::read_type(buf)?;
+                v.push(<T as JceType>::read(buf, t, struct_name, field)?);
+            }
+
+            Ok(v)
+        }
+
+        fn write<B: BufMut>(&self, buf: &mut B, tag: u8) {
+            write_header(
+                buf,
+                JceHeader {
+                    val_type: super::LIST,
+                    tag,
+                },
+            );
+
+            self.write_len();
+
+            for val in self {
+                <T as JceType>::write(val, buf, 0);
+            }
+        }
+
+        fn write_len(&self) -> usize {
+            let len = self.len();
+            let mut total = crate::ser::len_bytes(len) + len; // 每个元素一个头
+            for val in self {
+                total += val.write_len();
+            }
+            total + 1 // list 类型头
+        }
+    }
 }
 
 fn read_type<B: Buf>(buf: &mut B) -> DecodeResult<u8> {
