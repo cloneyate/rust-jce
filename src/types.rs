@@ -25,7 +25,20 @@ fn check_type(
     struct_name: &'static str,
     field: &'static str,
 ) -> DecodeResult<()> {
-    if current == expected {
+    if current == expected || current == EMPTY {
+        return Ok(());
+    }
+    // Allow shorter primitive types to be read into larger types
+    // For example: i32 can be read from SHORT(1) or BYTE(0), i64 can be read from INT(2), etc.
+    let allowed = match expected {
+        SHORT => current == BYTE,
+        INT => current == BYTE || current == SHORT,
+        LONG => current == BYTE || current == SHORT || current == INT,
+        DOUBLE => current == FLOAT,
+        SHORT_BYTES => current == SINGLE_LIST,
+        _ => false,
+    };
+    if allowed {
         Ok(())
     } else {
         Err(DecodeError::IncorrectType {
@@ -33,6 +46,19 @@ fn check_type(
             field,
             val_type: current,
         })
+    }
+}
+
+fn size_of_jce_type(jce_type: u8) -> usize {
+    match jce_type {
+        EMPTY => 0,
+        BYTE => 1,
+        SHORT => 2,
+        INT => 4,
+        LONG => 8,
+        FLOAT => 4,
+        DOUBLE => 8,
+        _ => todo!(),
     }
 }
 
@@ -51,6 +77,23 @@ impl JceHeader {
     #[inline]
     pub fn tag(&self) -> u8 {
         self.tag
+    }
+
+    pub fn read<B: Buf>(buf: &mut B) -> DecodeResult<Self> {
+        check_buf_zero(buf)?;
+
+        let head = buf.get_u8();
+
+        let t = head & 0xF;
+        let mut tag = head >> 4; // 直接获取高四位
+
+        if tag == 0xF {
+            check_buf_zero(buf)?;
+
+            tag = buf.get_u8();
+        }
+
+        Ok(Self { val_type: t, tag })
     }
 }
 
@@ -157,11 +200,29 @@ macro_rules! primitive_type {
                 ) -> $crate::error::DecodeResult<Self> {
                     $crate::types::check_type(t, $crate::types::$jce_type, struct_name, field)?;
 
-                    if ::std::mem::size_of::<$type>() > buf.remaining() {
+                    if $crate::types::size_of_jce_type(t) > buf.remaining() {
                         return ::core::result::Result::Err($crate::error::DecodeError::Eof);
                     }
 
-                    Ok(buf.$read())
+                    let value = match t {
+                        $crate::types::BYTE => buf.get_i8() as $type,
+                        $crate::types::SHORT => buf.get_i16() as $type,
+                        $crate::types::INT => buf.get_i32() as $type,
+                        $crate::types::LONG => buf.get_i64() as $type,
+                        $crate::types::FLOAT => buf.get_f32() as $type,
+                        $crate::types::DOUBLE => buf.get_f64() as $type,
+                        $crate::types::EMPTY => 0 as $type,
+                        _ => {
+                            return ::core::result::Result::Err(
+                                $crate::error::DecodeError::IncorrectType {
+                                    struct_name,
+                                    field,
+                                    val_type: t,
+                                },
+                            );
+                        }
+                    };
+                    Ok(value)
                 }
 
                 fn write<B: ::bytes::BufMut>(&self, buf: &mut B, tag: u8) {
@@ -315,10 +376,6 @@ macro_rules! type_array {
 }
 
 type_array! {
-    i8,
-    BYTE,
-    get_i8,
-    put_i8;
     i16,
     SHORT,
     get_i16,
@@ -467,11 +524,7 @@ mod byte_array {
     }
 
     pub fn slice_encoded_len(slice: &[u8]) -> usize {
-        let bytes_len = if slice.len() < u8::MAX as usize {
-            1
-        } else {
-            4
-        };
+        let bytes_len = if slice.len() < u8::MAX as usize { 1 } else { 4 };
 
         bytes_len + slice.len()
     }
@@ -512,6 +565,70 @@ mod byte_array {
 
         fn write_len(&self) -> usize {
             slice_encoded_len(self)
+        }
+    }
+
+    impl JceType for Vec<i8> {
+        fn read<B: ::bytes::Buf>(
+            buf: &mut B,
+            t: u8,
+            struct_name: &'static str,
+            field: &'static str,
+        ) -> DecodeResult<Self> {
+            match t {
+                super::SINGLE_LIST => {
+                    {
+                        let elem_header = JceHeader::read(buf)?;
+                        if elem_header.val_type != crate::types::BYTE || elem_header.tag != 0 {
+                            return Err(DecodeError::IncorrectType {
+                                struct_name,
+                                field,
+                                val_type: crate::types::BYTE,
+                            });
+                        }
+                    }
+                    let len = read_len(buf)?;
+                    let mut v: Vec<u8> = vec![0; len];
+                    crate::types::byte_array::read_slice(buf, &mut v, len)?;
+                    return Ok(vec_u8_to_i8(v));
+                }
+                crate::types::LIST => {
+                    let len = read_len(buf)?;
+                    let mut v = Vec::with_capacity(len);
+                    for _ in 0..len {
+                        let t = read_type(buf)?;
+                        v.push(i8::read(buf, t, struct_name, field)?);
+                    }
+                    return Ok(v);
+                }
+                _ => {
+                    todo!()
+                }
+            }
+        }
+
+        fn write<B: ::bytes::BufMut>(&self, buf: &mut B, tag: u8) {
+            write_header(
+                buf,
+                JceHeader {
+                    val_type: crate::types::LIST,
+                    tag,
+                },
+            );
+
+            crate::ser::write_len(buf, self.len());
+
+            for val in self {
+                i8::write(val, buf, 0);
+            }
+        }
+
+        fn write_len(&self) -> usize {
+            let len = self.len();
+            crate::ser::len_bytes(len)
+                    + len // each header
+                    + len * ::std::mem::size_of::<i8>()
+                    + 1 // len type
         }
     }
 
@@ -559,6 +676,16 @@ mod byte_array {
 
         fn write_len(&self) -> usize {
             slice_encoded_len(self)
+        }
+    }
+
+    fn vec_u8_to_i8(v: Vec<u8>) -> Vec<i8> {
+        unsafe {
+            let ptr = v.as_ptr() as *mut i8;
+            let len = v.len();
+            let cap = v.capacity();
+            std::mem::forget(v);
+            Vec::from_raw_parts(ptr, len, cap)
         }
     }
 }
