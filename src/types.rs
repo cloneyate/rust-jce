@@ -937,3 +937,196 @@ pub fn skip_field<B: Buf>(buf: &mut B, t: u8) -> DecodeResult<()> {
 
     Ok(())
 }
+
+#[cfg(feature = "json")]
+mod json {
+    use crate::de::read_len;
+    use crate::error::{DecodeError, DecodeResult};
+    use crate::ser::{write_header, write_len};
+    use crate::types::{read_type, JceHeader, JceType, BYTE, DOUBLE, EMPTY, FLOAT, INT, LIST, LONG, MAP, SHORT, SHORT_BYTES, LONG_BYTES, STRUCT_START, STRUCT_END};
+    use serde_json::Value;
+
+    impl JceType for Value {
+        fn read<B: bytes::Buf>(
+            buf: &mut B,
+            t: u8,
+            struct_name: &'static str,
+            field: &'static str,
+        ) -> DecodeResult<Self> {
+            match t {
+                EMPTY => Ok(Value::Null),
+                BYTE => {
+                    let v = <i8 as JceType>::read(buf, t, struct_name, field)?;
+                    Ok(Value::Number(v.into()))
+                }
+                SHORT => {
+                    let v = <i16 as JceType>::read(buf, t, struct_name, field)?;
+                    Ok(Value::Number(v.into()))
+                }
+                INT => {
+                    let v = <i32 as JceType>::read(buf, t, struct_name, field)?;
+                    Ok(Value::Number(v.into()))
+                }
+                LONG => {
+                    let v = <i64 as JceType>::read(buf, t, struct_name, field)?;
+                    Ok(Value::Number(v.into()))
+                }
+                FLOAT => {
+                    let v = <f32 as JceType>::read(buf, t, struct_name, field)?;
+                    Ok(serde_json::Number::from_f64(v as f64)
+                        .map(Value::Number)
+                        .unwrap_or(Value::Null))
+                }
+                DOUBLE => {
+                    let v = <f64 as JceType>::read(buf, t, struct_name, field)?;
+                    Ok(serde_json::Number::from_f64(v)
+                        .map(Value::Number)
+                        .unwrap_or(Value::Null))
+                }
+                SHORT_BYTES | LONG_BYTES => {
+                    let v = <String as JceType>::read(buf, t, struct_name, field)?;
+                    Ok(Value::String(v))
+                }
+                LIST => {
+                    let len = read_len(buf)?;
+                    let mut arr = Vec::with_capacity(len);
+                    for _ in 0..len {
+                        let elem_t = read_type(buf)?;
+                        let elem = Value::read(buf, elem_t, struct_name, field)?;
+                        arr.push(elem);
+                    }
+                    Ok(Value::Array(arr))
+                }
+                MAP => {
+                    let len = read_len(buf)?;
+                    let mut map = serde_json::Map::with_capacity(len);
+                    for _ in 0..len {
+                        let key_t = read_type(buf)?;
+                        let key = Value::read(buf, key_t, struct_name, field)?;
+                        let val_t = read_type(buf)?;
+                        let val = Value::read(buf, val_t, struct_name, field)?;
+                        
+                        let key_str = match key {
+                            Value::String(s) => s,
+                            Value::Number(n) => n.to_string(),
+                            Value::Bool(b) => b.to_string(),
+                            _ => key.to_string(),
+                        };
+                        map.insert(key_str, val);
+                    }
+                    Ok(Value::Object(map))
+                }
+                STRUCT_START => {
+                    // Read struct as object
+                    let mut map = serde_json::Map::new();
+                    loop {
+                        let header = JceHeader::read(buf)?;
+                        if header.val_type == STRUCT_END {
+                            break;
+                        }
+                        let tag = header.tag.to_string();
+                        let val = Value::read(buf, header.val_type, struct_name, field)?;
+                        map.insert(tag, val);
+                    }
+                    Ok(Value::Object(map))
+                }
+                _ => Err(DecodeError::IncorrectType {
+                    struct_name,
+                    field,
+                    val_type: t,
+                }),
+            }
+        }
+
+        fn write<B: bytes::BufMut>(&self, buf: &mut B, tag: u8) {
+            match self {
+                Value::Null => {
+                    write_header(buf, JceHeader { val_type: EMPTY, tag });
+                }
+                Value::Bool(b) => {
+                    (*b as i8).write(buf, tag);
+                }
+                Value::Number(n) => {
+                    // Try to write as smallest integer type, fallback to i64 or f64
+                    if let Some(i) = n.as_i64() {
+                        if i >= i8::MIN as i64 && i <= i8::MAX as i64 {
+                            (i as i8).write(buf, tag);
+                        } else if i >= i16::MIN as i64 && i <= i16::MAX as i64 {
+                            (i as i16).write(buf, tag);
+                        } else if i >= i32::MIN as i64 && i <= i32::MAX as i64 {
+                            (i as i32).write(buf, tag);
+                        } else {
+                            i.write(buf, tag);
+                        }
+                    } else if let Some(f) = n.as_f64() {
+                        // Use f64 for floating point
+                        f.write(buf, tag);
+                    } else {
+                        // Fallback: write as string
+                        n.to_string().write(buf, tag);
+                    }
+                }
+                Value::String(s) => {
+                    s.write(buf, tag);
+                }
+                Value::Array(arr) => {
+                    write_header(buf, JceHeader { val_type: LIST, tag });
+                    write_len(buf, arr.len());
+                    for elem in arr {
+                        elem.write(buf, 0);
+                    }
+                }
+                Value::Object(obj) => {
+                    write_header(buf, JceHeader { val_type: MAP, tag });
+                    write_len(buf, obj.len());
+                    for (k, v) in obj {
+                        k.write(buf, 0);
+                        v.write(buf, 1);
+                    }
+                }
+            }
+        }
+
+        fn write_len(&self) -> usize {
+            match self {
+                Value::Null => 0,
+                Value::Bool(_) => 1,
+                Value::Number(n) => {
+                    if let Some(i) = n.as_i64() {
+                        if i >= i8::MIN as i64 && i <= i8::MAX as i64 {
+                            1
+                        } else if i >= i16::MIN as i64 && i <= i16::MAX as i64 {
+                            2
+                        } else if i >= i32::MIN as i64 && i <= i32::MAX as i64 {
+                            4
+                        } else {
+                            8
+                        }
+                    } else if n.as_f64().is_some() {
+                        8
+                    } else {
+                        n.to_string().len() + 1
+                    }
+                }
+                Value::String(s) => s.write_len(),
+                Value::Array(arr) => {
+                    let len = arr.len();
+                    let mut total = crate::ser::len_bytes(len) + 1; // header
+                    for elem in arr {
+                        total += elem.write_len() + 1; // each element has header
+                    }
+                    total
+                }
+                Value::Object(obj) => {
+                    let len = obj.len();
+                    let mut total = crate::ser::len_bytes(len) + 1; // header
+                    for (k, v) in obj {
+                        total += k.write_len() + 1; // key header
+                        total += v.write_len() + 1; // value header
+                    }
+                    total
+                }
+            }
+        }
+    }
+}
