@@ -11,11 +11,16 @@ macro_rules! error {
 }
 
 #[proc_macro_derive(JceStruct, attributes(jce))]
-pub fn jce(input: TokenStream) -> TokenStream {
-    try_jce(input).unwrap()
+pub fn jce_struct(input: TokenStream) -> TokenStream {
+    try_jce_struct(input).unwrap()
 }
 
-fn try_jce(input: TokenStream) -> Result<TokenStream, Box<dyn Error>> {
+#[proc_macro_derive(JceEnum, attributes(jce))]
+pub fn jce_enum(input: TokenStream) -> TokenStream {
+    try_jce_enum(input).unwrap()
+}
+
+fn try_jce_struct(input: TokenStream) -> Result<TokenStream, Box<dyn Error>> {
     let input: DeriveInput = syn::parse(input)?;
 
     let s = match input.data {
@@ -89,11 +94,7 @@ fn try_jce(input: TokenStream) -> Result<TokenStream, Box<dyn Error>> {
     let mut matches = vec![];
     let mut encodes = vec![];
 
-    let tags_encoded_len: usize = tags.iter().map(|tag|
-        if *tag < 0xF {
-            1
-        } else { 2 }
-    ).sum();
+    let tags_encoded_len: usize = tags.iter().map(|tag| if *tag < 0xF { 1 } else { 2 }).sum();
 
     for (i, tag) in tags.into_iter().enumerate() {
         let ident = &s.fields.iter().nth(i).unwrap().ident;
@@ -152,6 +153,103 @@ fn try_jce(input: TokenStream) -> Result<TokenStream, Box<dyn Error>> {
                 Self {
                     #(#fields_default),*,
                 }
+            }
+        }
+    }
+    .into())
+}
+
+fn try_jce_enum(input: TokenStream) -> Result<TokenStream, Box<dyn Error>> {
+    let input: DeriveInput = syn::parse(input)?;
+
+    let name = input.ident;
+    let (imp_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+
+    let enum_data = match input.data {
+        Data::Enum(e) => e,
+        _ => error!("JceEnum can only derive for enums"),
+    };
+
+    // Generate Into<i32> implementation
+    let mut into_match = vec![];
+    let mut try_from_match = vec![];
+
+    for (discriminant, variant) in enum_data.variants.iter().enumerate() {
+        let ident = &variant.ident;
+        let value = discriminant as i32;
+        into_match.push(quote! {
+            #name::#ident => #value,
+        });
+        try_from_match.push(quote! {
+            #value => Ok(#name::#ident),
+        });
+    }
+
+    // Handle explicit discriminants - if any variant has discriminant, use that instead of implicit
+    let has_explicit = enum_data.variants.iter().any(|v| v.discriminant.is_some());
+    if has_explicit {
+        into_match.clear();
+        try_from_match.clear();
+
+        for variant in &enum_data.variants {
+            let ident = &variant.ident;
+            let (_, disc) = variant.discriminant.as_ref().unwrap();
+            try_from_match.push(quote! {
+                #disc => Ok(#name::#ident),
+            });
+            into_match.push(quote! {
+                #name::#ident => #disc,
+            });
+        }
+    }
+
+    let first_variant = &enum_data.variants.first().unwrap().ident;
+    Ok(quote! {
+         impl #imp_generics ::jce::JceEnum for #name #ty_generics #where_clause {
+         }
+
+         impl #imp_generics From<#name #ty_generics> for i32 #where_clause {
+             fn from(v: #name #ty_generics) -> Self {
+                 match v {
+                     #(#into_match)*
+                 }
+             }
+         }
+
+         impl #imp_generics TryFrom<i32> for #name #ty_generics #where_clause {
+             type Error = i32;
+
+             fn try_from(v: i32) -> Result<Self, Self::Error> {
+                 match v {
+                     #(#try_from_match)*
+                     _ => Err(v),
+                 }
+             }
+         }
+
+         impl #imp_generics Default for #name #ty_generics #where_clause {
+             fn default() -> Self {
+                 #name::#first_variant
+             }
+         }
+
+        impl #imp_generics ::jce::types::JceType for #name #ty_generics #where_clause {
+            fn read<B: ::jce::bytes::Buf>(
+                buf: &mut B,
+                t: u8,
+                struct_name: &'static str,
+                field: &'static str,
+            ) -> ::jce::error::DecodeResult<Self> {
+                ::jce::types::jce_enum::read(buf, t, struct_name, field)
+                    .map_err(|e| e.into())
+            }
+
+            fn write<B: ::jce::bytes::BufMut>(&self, buf: &mut B, tag: u8) {
+                ::jce::types::jce_enum::write(self, buf, tag);
+            }
+
+            fn write_len(&self) -> usize {
+                ::jce::types::jce_enum::write_len(self)
             }
         }
     }

@@ -871,6 +871,46 @@ mod jce_struct {
     }
 }
 
+// Helper functions that the derive can use to automatically implement JceType for enums
+// This avoids the conflicting blanket implementation with JceStruct
+pub mod jce_enum {
+    use crate::error::{DecodeError, DecodeResult};
+    use crate::types::JceType;
+    use crate::JceEnum;
+    use bytes::{Buf, BufMut};
+
+    pub fn read<T, B>(
+        buf: &mut B,
+        t: u8,
+        struct_name: &'static str,
+        field: &'static str,
+    ) -> DecodeResult<T>
+    where
+        T: JceEnum,
+        B: Buf,
+    {
+        let value = i32::read(buf, t, struct_name, field)?;
+        T::try_from(value).map_err(|_| DecodeError::IncorrectType {
+            struct_name,
+            field,
+            val_type: t,
+        })
+    }
+
+    pub fn write<T, B>(value: &T, buf: &mut B, tag: u8)
+    where
+        T: JceEnum + Clone,
+        B: BufMut,
+    {
+        let v: i32 = value.clone().into();
+        v.write(buf, tag);
+    }
+
+    pub fn write_len<T>(_: &T) -> usize {
+        std::mem::size_of::<i32>() + 1 // 4 bytes for i32 + 1 byte header
+    }
+}
+
 fn read_type<B: Buf>(buf: &mut B) -> DecodeResult<u8> {
     check_buf_zero(buf)?;
     Ok(buf.get_u8() & 0xF)
@@ -943,7 +983,10 @@ mod json {
     use crate::de::read_len;
     use crate::error::{DecodeError, DecodeResult};
     use crate::ser::{write_header, write_len};
-    use crate::types::{read_type, JceHeader, JceType, BYTE, DOUBLE, EMPTY, FLOAT, INT, LIST, LONG, MAP, SHORT, SHORT_BYTES, LONG_BYTES, STRUCT_START, STRUCT_END};
+    use crate::types::{
+        read_type, JceHeader, JceType, BYTE, DOUBLE, EMPTY, FLOAT, INT, LIST, LONG, LONG_BYTES,
+        MAP, SHORT, SHORT_BYTES, STRUCT_END, STRUCT_START,
+    };
     use serde_json::Value;
 
     impl JceType for Value {
@@ -1005,7 +1048,7 @@ mod json {
                         let key = Value::read(buf, key_t, struct_name, field)?;
                         let val_t = read_type(buf)?;
                         let val = Value::read(buf, val_t, struct_name, field)?;
-                        
+
                         let key_str = match key {
                             Value::String(s) => s,
                             Value::Number(n) => n.to_string(),
@@ -1041,7 +1084,13 @@ mod json {
         fn write<B: bytes::BufMut>(&self, buf: &mut B, tag: u8) {
             match self {
                 Value::Null => {
-                    write_header(buf, JceHeader { val_type: EMPTY, tag });
+                    write_header(
+                        buf,
+                        JceHeader {
+                            val_type: EMPTY,
+                            tag,
+                        },
+                    );
                 }
                 Value::Bool(b) => {
                     (*b as i8).write(buf, tag);
@@ -1070,7 +1119,13 @@ mod json {
                     s.write(buf, tag);
                 }
                 Value::Array(arr) => {
-                    write_header(buf, JceHeader { val_type: LIST, tag });
+                    write_header(
+                        buf,
+                        JceHeader {
+                            val_type: LIST,
+                            tag,
+                        },
+                    );
                     write_len(buf, arr.len());
                     for elem in arr {
                         elem.write(buf, 0);

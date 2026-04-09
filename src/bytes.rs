@@ -1,2 +1,2 @@
 // re-export for derive
-pub use ::bytes::{Buf, BufMut};
+pub use bytes::{Buf, BufMut};

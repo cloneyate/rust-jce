@@ -8,8 +8,10 @@ mod ser;
 pub mod types;
 pub mod value;
 
-use ::bytes::{Buf, BufMut};
-pub use jce_derive::JceStruct;
+use bytes::{Buf, BufMut};
+pub use jce_derive::{JceEnum, JceStruct};
+
+pub trait JceEnum: Sized + Into<i32> + TryFrom<i32> {}
 
 pub trait JceStruct: Sized {
     fn encode_raw<B: BufMut>(&self, buf: &mut B);

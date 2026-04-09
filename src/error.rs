@@ -45,7 +45,6 @@ impl Display for DecodeError {
     }
 }
 
-
 impl std::error::Error for DecodeError {}
 
 impl From<Utf8Error> for DecodeError {
