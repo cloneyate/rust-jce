@@ -1,3 +1,5 @@
+#![feature(min_specialization)]
+
 use crate::error::{DecodeResult, EncodeError, EncodeResult};
 
 pub mod bytes;

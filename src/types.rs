@@ -824,8 +824,8 @@ mod jce_struct {
         }
     }
 
-    impl<T: JceStruct> JceType for Vec<T> {
-        fn read<B: Buf>(
+    impl<T: JceType> JceType for Vec<T> {
+        default fn read<B: Buf>(
             buf: &mut B,
             t: u8,
             struct_name: &'static str,
@@ -844,7 +844,7 @@ mod jce_struct {
             Ok(v)
         }
 
-        fn write<B: BufMut>(&self, buf: &mut B, tag: u8) {
+        default fn write<B: BufMut>(&self, buf: &mut B, tag: u8) {
             write_header(
                 buf,
                 JceHeader {
@@ -860,7 +860,7 @@ mod jce_struct {
             }
         }
 
-        fn write_len(&self) -> usize {
+        default fn write_len(&self) -> usize {
             let len = self.len();
             let mut total = crate::ser::len_bytes(len) + len; // 每个元素一个头
             for val in self {
