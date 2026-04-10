@@ -790,7 +790,7 @@ mod map {
 
 mod jce_struct {
     use crate::error::DecodeResult;
-    use crate::ser::{write_header, write_type};
+    use crate::ser::{write_header, write_len, write_type};
     use crate::types::{JceHeader, JceType};
     use crate::JceStruct;
     use bytes::{Buf, BufMut};
@@ -853,7 +853,8 @@ mod jce_struct {
                 },
             );
 
-            self.write_len();
+            let len = self.len();
+            write_len(buf, len);
 
             for val in self {
                 <T as JceType>::write(val, buf, 0);
