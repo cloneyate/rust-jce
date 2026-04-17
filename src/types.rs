@@ -442,6 +442,10 @@ mod byte_array {
     use crate::types::{read_type, JceHeader, JceType};
     use bytes::{Buf, BufMut};
 
+    fn slice_i8_to_u8(slice: &[i8]) -> &[u8] {
+        unsafe { std::slice::from_raw_parts(slice.as_ptr() as *const u8, slice.len()) }
+    }
+
     fn read_bytes_len<B: Buf>(
         buf: &mut B,
         t: u8,
@@ -536,27 +540,39 @@ mod byte_array {
             struct_name: &'static str,
             field: &'static str,
         ) -> DecodeResult<Vec<u8>> {
-            if t == super::LIST {
-                let len = read_len(buf)?;
-
-                let mut v = Vec::with_capacity(len);
-
-                for _ in 0..len {
-                    let t = read_type(buf)?;
-                    super::check_type(t, super::BYTE, struct_name, field)?;
-
-                    v.push(buf.get_u8());
+            match t {
+                super::SINGLE_LIST => {
+                    {
+                        let elem_header = JceHeader::read(buf)?;
+                        if elem_header.val_type != crate::types::BYTE || elem_header.tag != 0 {
+                            return Err(DecodeError::IncorrectType {
+                                struct_name,
+                                field,
+                                val_type: crate::types::BYTE,
+                            });
+                        }
+                    }
+                    let len = read_len(buf)?;
+                    let mut v: Vec<u8> = vec![0; len];
+                    crate::types::byte_array::read_slice(buf, &mut v, len)?;
+                    return Ok(v);
                 }
-
-                return Ok(v);
+                crate::types::LIST => {
+                    let len = read_len(buf)?;
+                    let mut v = Vec::with_capacity(len);
+                    for _ in 0..len {
+                        let t = read_type(buf)?;
+                        v.push(u8::read(buf, t, struct_name, field)?);
+                    }
+                    return Ok(v);
+                }
+                _ => {
+                    let len = read_bytes_len(buf, t, struct_name, field)?;
+                    let mut v = vec![0u8; len];
+                    read_slice(buf, &mut v, len)?;
+                    Ok(v)
+                }
             }
-
-            let len = read_bytes_len(buf, t, struct_name, field)?;
-
-            let mut v = vec![0u8; len];
-            read_slice(buf, &mut v, len)?;
-
-            Ok(v)
         }
 
         fn write<B: BufMut>(&self, buf: &mut B, tag: u8) {
@@ -611,16 +627,21 @@ mod byte_array {
             write_header(
                 buf,
                 JceHeader {
-                    val_type: crate::types::LIST,
+                    val_type: crate::types::SINGLE_LIST,
                     tag,
+                },
+            );
+            write_header(
+                buf,
+                JceHeader {
+                    val_type: crate::types::BYTE,
+                    tag: 0,
                 },
             );
 
             crate::ser::write_len(buf, self.len());
 
-            for val in self {
-                i8::write(val, buf, 0);
-            }
+            buf.put_slice(slice_i8_to_u8(self.as_ref()))
         }
 
         fn write_len(&self) -> usize {
