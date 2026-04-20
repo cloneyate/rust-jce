@@ -26,18 +26,18 @@ pub fn write_type<B: BufMut>(buf: &mut B, t: u8) {
 }
 
 pub fn write_len<B: BufMut>(buf: &mut B, len: usize) {
-    if let Ok(len) = u8::try_from(len) {
+    if let Ok(len) = i8::try_from(len) {
         buf.put_u8(types::BYTE);
-        buf.put_u8(len);
-    } else if let Ok(len) = u16::try_from(len) {
+        buf.put_i8(len);
+    } else if let Ok(len) = i16::try_from(len) {
         buf.put_u8(types::SHORT);
-        buf.put_u16(len);
-    } else if let Ok(len) = u32::try_from(len) {
+        buf.put_i16(len);
+    } else if let Ok(len) = i32::try_from(len) {
         buf.put_u8(types::INT);
-        buf.put_u32(len);
-    } else if let Ok(len) = u64::try_from(len) {
+        buf.put_i32(len);
+    } else if let Ok(len) = i64::try_from(len) {
         buf.put_u8(types::LONG);
-        buf.put_u64(len);
+        buf.put_i64(len);
     } else {
         unreachable!();
     }
