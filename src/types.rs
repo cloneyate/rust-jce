@@ -617,6 +617,12 @@ mod byte_array {
                     }
                     return Ok(v);
                 }
+                crate::types::SHORT_BYTES | crate::types::LONG_BYTES => {
+                    let len = read_bytes_len(buf, t, struct_name, field)?;
+                    let mut v: Vec<u8> = vec![0; len];
+                    read_slice(buf, &mut v, len)?;
+                    return Ok(vec_u8_to_i8(v));
+                }
                 _ => {
                     todo!()
                 }
